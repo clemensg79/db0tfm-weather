@@ -1,0 +1,2 @@
+*/20 2-20 * * * /home/gesell/timelapse.sh  > /dev/null 2>&1
+0 3  * * * /usr/bin/find /usr/local/www/nginx/cam -type d -name 20\* -ctime +1 |/usr/bin/xargs rm -rf > /dev/null 2>&1
