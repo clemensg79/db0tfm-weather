@@ -1,14 +1,14 @@
 #!/usr/local/bin/perl
 use strict;
 use warnings;
-use LWP::Simple;
+use LWP::Simple qw ($ua head get);
+$ua->timeout(15);;
 use JSON::Parse 'parse_json';
 use Data::Dumper;
 use RRD::Simple;
 use POSIX 'strftime';
 use Daemon::Generic;
 use Storable;
-#use 5.014;
 use Math::Round;
 use GD;
 use GD::Arrow;
@@ -20,11 +20,13 @@ use IO::Socket::INET;
 $ENV{TZ}="Europe/Berlin";
 
 my $aprswxcall = "DB0TFM-6";
+my $wind_dir_cor = -40;
+my $epoch_max_diff = 3;
 my $maxentries = 10;
 my $wwwpath = "/usr/local/www/nginx/wind/";
 my $campath = "/usr/local/www/nginx/cam/latest/";
 
-#my $jsonurl = "http://api.aprs.fi/api/get\?name=".$aprswxcall."\&what=wx\&apikey=74798.6oguLdHy9T2EBk\&format=json";
+my $jsonurl = "http://api.aprs.fi/api/get\?name=".$aprswxcall."\&what=wx\&apikey=74798.6oguLdHy9T2EBk\&format=json";
 my $perlstorefile = lc($aprswxcall).".perlstore";
 my $htmlfile = $wwwpath.lc($aprswxcall).".inc";
 my $rrdfile = lc($aprswxcall).".rrd";
@@ -47,7 +49,6 @@ newdaemon(
 sub gd_run {
 	#generate arrows
 	genarrows();
-	#my $json;
 	my $epochlast = 0;
 	my @lastentries;
 	my $lastcount = 0;
@@ -61,8 +62,15 @@ sub gd_run {
 
 
 	while (1) {
+
 		my $socket_data = socket_client();
+		# check if get some data, if get zeros, try to get data from json
+		if ($socket_data eq '0:0:0:0') {
+			$socket_data = json_client();
+		       	print "Warning: No Direct TFM Service, fetching APRS Data via aprs.fi ...\n";	
+		}
 		$socket_data =~ m/^(\d+):(\d+\.\d+):(\d+\.\d+):(\d+)$/g;
+		
 		my $epoch = $1;
 		my $wind_speed = $2;
 		my $wind_gust = $3;
@@ -74,16 +82,18 @@ sub gd_run {
 		$entrie->{wind_gust} = $wind_gust;
 		$entrie->{wind_direction} = $wind_dir;
 
-	      	my $date = strftime '%Y/%m/%d %H:%M:%S', localtime $epoch;	
-		if ($epoch != $epochlast) {
+	      	my $date = strftime '%Y/%m/%d %H:%M:%S', localtime $epoch;
+		# check if clock runs forward if 1 (true) update things	
+		if (epoch_check($epoch,$epochlast)) {
 			$epochlast = $epoch;
 			push @lastentries, $entrie;
 			store(\@lastentries, $perlstorefile) || die "can't store to file $perlstorefile\n";
 			$lastcount++;
-			if ($lastcount >= $maxentries+1 ) {
-				shift @lastentries;
-				$lastcount--;
-			}
+		}
+		# remove unwanted entries	
+		while ($lastcount >= $maxentries+1 ) {
+			shift @lastentries;
+			$lastcount--;
 		}
 		$rrd->update(
 			wind_speed => $wind_speed*3.6,
@@ -337,8 +347,9 @@ sub socket_client{
 	    PeerHost => '192.168.1.144',
 	    PeerPort => '7777',
 	    Proto => 'tcp',
-	);
-	my $response='0:0:0:0:0';
+	    Timeout  => 15,
+	    );
+	my $response='0:0:0:0';
 	return $response unless $socket;
 	
 	$socket->recv($response, 80);
@@ -346,3 +357,53 @@ sub socket_client{
 	$socket->close();
 	return $response;
 }
+
+sub json_client{
+	my $response='0:0:0:0';
+	my $json = '';
+	$json = get($jsonurl);
+	if ($json ne '') {
+		my $w = parse_json ($json);
+		my $entrie = $w->{entries}[0];
+		my $wind_speed = $entrie->{wind_speed};	
+		my $wind_gust = $entrie->{wind_gust};		
+		my $wind_dir = $entrie->{wind_direction};	
+		my $temp = $entrie->{temp};	
+		my $hum = $entrie->{humidity};	
+		my $rain = $entrie->{rain_nm};	
+		my $epoch = $entrie->{time};
+
+		#wind dir correction
+		if (($wind_dir + $wind_dir_cor) >= 0 ) {
+			$wind_dir = $wind_dir + $wind_dir_cor;
+		} elsif (($wind_dir + $wind_dir_cor) < 0 ) {
+			$wind_dir = $wind_dir + $wind_dir_cor + 360;
+		}
+
+		$response="$epoch:$wind_speed:$wind_gust:$wind_dir";
+	}
+	return $response;
+}
+
+sub epoch_check {
+	my $epoch = shift;
+	my $epochlast = shift;
+	my $return;
+
+	# check if clock runs backwards
+	my $epoch_diff = $epoch - $epochlast;
+	if ($epoch_diff == 0) {
+		$return = 0;
+	} elsif ($epoch_diff <= $epoch_max_diff) {
+		print "Warning: time from past, or not diffent enough, max $epoch_max_diff\n";
+		$return = 0;
+	} elsif ($epoch_diff >= $epoch_max_diff) {
+		$return = 1;	
+	} else {
+		print "Warning: Time Problem, this should never happen\n";
+		$return = 0;
+	}
+	return $return;
+}
+
+

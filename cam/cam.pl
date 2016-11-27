@@ -25,11 +25,8 @@ newdaemon(
 sub gd_run {
 	while(1) {
 		if (is_day()) {
-			print "Tag ...\n";
 			make_datedir();
 			get_image();
-		} else {
-			print "Nacht ...\n"
 		}
 		sleep 60;
 	}
@@ -44,15 +41,21 @@ sub get_image {
 	my $imagefile = $imagepath.'/'.$time.'.jpg';
 	my $rc = LWP::Simple::getstore($imageurl,$imagefile);
 
-	# overlay wind image
-	overlay_image($imagefile);
+	if (is_success($rc)) {
+		# overlay wind image
+		overlay_image($imagefile);
 	
-	#atomic symlink the last picture
-	my $imagefilelatest = $imagepath.'/latest.jpg';
-	my $imagefilelatesttmp = $imagepath.'/latest.jpgtmp';
-	symlink($imagefile,$imagefilelatesttmp);
-	rename($imagefilelatesttmp,$imagefilelatest);
-	
+		#atomic symlink the last picture
+		my $imagefilelatest = $imagepath.'/latest.jpg';
+		my $imagefilelatesttmp = $imagepath.'/latest.jpgtmp';
+		symlink($imagefile,$imagefilelatesttmp);
+		rename($imagefilelatesttmp,$imagefilelatest);
+	} else {
+		print "Error: while fetching Url $imageurl\n";
+		print "Error: deleting broker image $imagefile\n";
+		unlink($imagefile);
+
+	}
 	return $rc;
 }
 
